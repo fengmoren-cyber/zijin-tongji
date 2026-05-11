@@ -111,6 +111,10 @@ def parse_args() -> argparse.Namespace:
         "--output", type=Path, default=DEFAULT_OUTPUT_DIR,
         help=f"输出目录（默认：{DEFAULT_OUTPUT_DIR.name}/）",
     )
+    parser.add_argument(
+        "--rules", type=Path, default=DEFAULT_MAPPING_PATH,
+        help=f"规则库 Excel 文件路径（默认：{DEFAULT_MAPPING_PATH}）",
+    )
     return parser.parse_args()
 
 
@@ -164,17 +168,17 @@ def main() -> None:
     income_rules = None
 
     if not args.income_only:
-        print(f"📋 加载支出分类规则：{DEFAULT_MAPPING_PATH.name}")
-        if not DEFAULT_MAPPING_PATH.exists():
+        print(f"📋 加载支出分类规则：{args.rules.name}")
+        if not args.rules.exists():
             print("   ⚠️  规则文件不存在，将使用内置默认关键词规则")
-        rules = load_classification_rules(DEFAULT_MAPPING_PATH)
+        rules = load_classification_rules(args.rules)
         print(f"   精确映射 {len(rules.exact)} 条 / 关键词规则 {len(rules.keyword)} 条")
 
     if not args.expense_only:
-        print(f"📋 加载收入分类规则：{DEFAULT_INCOME_MAPPING_PATH.name}")
-        if not DEFAULT_INCOME_MAPPING_PATH.exists():
+        print(f"📋 加载收入分类规则：{args.rules.name}")
+        if not args.rules.exists():
             print("   ⚠️  收入规则文件不存在，将使用内置默认关键词规则")
-        income_rules = load_income_classification_rules(DEFAULT_INCOME_MAPPING_PATH)
+        income_rules = load_income_classification_rules(args.rules)
         print(f"   精确映射 {len(income_rules.exact)} 条 / 关键词规则 {len(income_rules.keyword)} 条")
 
     # ── 预先分类（增强功能与报表共用，避免重复计算）──────────────────────────

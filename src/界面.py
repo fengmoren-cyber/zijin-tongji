@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-界面.py — 资金统计软件 v2.3  图形界面入口
+界面.py — 资金统计软件 v2.3.1  图形界面入口
 ========================================
 软件名称：资金统计软件
 版权所属：玉玄道·资金管理部
-版    本：v2.3
+版    本：v2.3.1
 
 修复说明：
-  v2.3 - 改用进程内执行(runpy)，彻底解决 EXE 模式下开新窗口的问题
-         精简界面，扩大日志区，移除多余选项
+  v2.3   - 改用进程内执行(runpy)，彻底解决 EXE 模式下开新窗口的问题
+           精简界面，扩大日志区，移除多余选项
+  v2.3.1 - 修复 --rules 参数未识别错误
+           按钮行移至日志区上方，确保始终可见
 """
 from __future__ import annotations
 
@@ -58,7 +60,7 @@ _LOGO_PATH   = _ASSETS / "logo.png"
 # 应用信息
 # ══════════════════════════════════════════════════════════════════
 APP_NAME  = "资金统计软件"
-APP_VER   = "v2.3"
+APP_VER   = "v2.3.1"
 APP_CORP  = "玉玄道·资金管理部"
 APP_YEAR  = "2026"
 
@@ -457,21 +459,21 @@ class App(ctk.CTk):
             command=self._sync_g,
         ).pack(side="left")
 
-        # 日志区（主体）
-        lc = self._card(parent, "执行日志")
-        lc.pack(fill="both", expand=True, padx=10, pady=(0, 4))
-        self._gl = self._logbox(lc)
-
-        # 按钮行（固定高度）
-        bb = ctk.CTkFrame(parent, fg_color=BG_WIN, height=50)
-        bb.pack(fill="x", padx=10, pady=(0, 8))
+        # 按钮行（日志区上方，始终可见）
+        bb = ctk.CTkFrame(parent, fg_color=BG_WIN, height=54)
+        bb.pack(fill="x", padx=10, pady=(4, 2))
         bb.pack_propagate(False)
-        self._btn(bb, "清空日志",      lambda: self._clear(self._gl), False).pack(side="left", pady=8)
+        self._btn(bb, "清空日志",      lambda: self._clear(self._gl), False).pack(side="left", pady=9)
         self._btn(bb, "📂 打开输出目录",
-                  lambda: _open_dir(self._go.get()), False).pack(side="left", padx=(8, 0), pady=8)
+                  lambda: _open_dir(self._go.get()), False).pack(side="left", padx=(8, 0), pady=9)
         self._gen_btn = self._btn(bb, "▶   执行生成报表",
                                    self._on_gen, True)
-        self._gen_btn.pack(side="right", pady=6)
+        self._gen_btn.pack(side="right", pady=8)
+
+        # 日志区（占满剩余空间）
+        lc = self._card(parent, "执行日志")
+        lc.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        self._gl = self._logbox(lc)
 
     # ── 修正补录 Tab ─────────────────────────────────────────────
 
@@ -497,21 +499,21 @@ class App(ctk.CTk):
         self._prow(rc, "报表文件 2", self._cf2, "report", None)
         ctk.CTkFrame(rc, fg_color="transparent", height=6).pack()  # 底部留白
 
-        # 日志区
-        lc = self._card(parent, "执行日志")
-        lc.pack(fill="both", expand=True, padx=10, pady=(0, 4))
-        self._cl = self._logbox(lc)
-
-        # 按钮行
-        bb = ctk.CTkFrame(parent, fg_color=BG_WIN, height=50)
-        bb.pack(fill="x", padx=10, pady=(0, 8))
+        # 按钮行（日志区上方，始终可见）
+        bb = ctk.CTkFrame(parent, fg_color=BG_WIN, height=54)
+        bb.pack(fill="x", padx=10, pady=(4, 2))
         bb.pack_propagate(False)
-        self._btn(bb, "清空日志",      lambda: self._clear(self._cl), False).pack(side="left", pady=8)
+        self._btn(bb, "清空日志",      lambda: self._clear(self._cl), False).pack(side="left", pady=9)
         self._btn(bb, "📂 打开输出目录",
-                  lambda: _open_dir(self._co.get()), False).pack(side="left", padx=(8, 0), pady=8)
+                  lambda: _open_dir(self._co.get()), False).pack(side="left", padx=(8, 0), pady=9)
         self._cor_btn = self._btn(bb, "✎   执行修正补录",
                                    self._on_cor, True)
-        self._cor_btn.pack(side="right", pady=6)
+        self._cor_btn.pack(side="right", pady=8)
+
+        # 日志区（占满剩余空间）
+        lc = self._card(parent, "执行日志")
+        lc.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        self._cl = self._logbox(lc)
 
     # ── 状态栏 ───────────────────────────────────────────────────
 
