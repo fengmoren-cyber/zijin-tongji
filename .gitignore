@@ -1,0 +1,53 @@
+# ── Python ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.spec.bak
+
+# ── 数据文件（不上传源数据，仅代码） ────────────────
+input/
+output/
+# rules/ 中的规则库也不上传（含企业内部信息）
+rules/*.xlsx
+rules/*.xlsm
+
+# ── 配置（包含本地路径，不上传） ────────────────────
+config.json
+
+# ── macOS ────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Icon?
+
+# ── Windows ───────────────────────────────────────────
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── 编辑器 ────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── 临时文件 ──────────────────────────────────────────
+*.tmp
+*.bak
+*.log
+~$*.xlsx
+.~lock.*.xlsx#
+
+# ── PyInstaller 产物 ──────────────────────────────────
+*.spec.bak
+dist/
+build/

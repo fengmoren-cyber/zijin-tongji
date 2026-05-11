@@ -1,0 +1,135 @@
+# =============================================================================
+# GitHub Actions — 资金统计软件 Windows EXE 自动打包
+# 玉玄道·资金管理部
+# =============================================================================
+#
+# 触发条件：推送 v* 格式的 Tag（如 v2.1.0）
+# 产   物：GitHub Release → 资金统计软件_v2.1.0.exe
+#
+# 使用方法：
+#   git tag v2.1.0
+#   git push origin v2.1.0
+#   → 等待 Actions 完成 → 在 Releases 页面下载 EXE
+# =============================================================================
+
+name: Build Windows EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # 允许手动触发（测试用）
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: '版本号（如 v2.1.0-test）'
+        required: false
+        default: 'v2.1.0-manual'
+
+jobs:
+  build-windows:
+    name: Windows EXE 打包
+    runs-on: windows-latest
+
+    steps:
+      # ── 1. 检出代码 ──────────────────────────────────────────
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # ── 2. 配置 Python ────────────────────────────────────────
+      - name: 配置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. 安装依赖 ────────────────────────────────────────────
+      - name: 安装运行时依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install customtkinter pillow openpyxl xlrd
+
+      - name: 安装 PyInstaller
+        run: pip install pyinstaller>=6.0.0
+
+      # ── 4. 获取版本号 ─────────────────────────────────────────
+      - name: 获取版本号
+        id: get_version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.tag_name }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "版本号: $VERSION"
+
+      # ── 5. 执行打包 ────────────────────────────────────────────
+      - name: PyInstaller 打包
+        shell: pwsh
+        run: |
+          # 使用 .spec 文件打包（包含所有配置）
+          pyinstaller 资金统计软件.spec
+
+          # 验证产物存在
+          if (Test-Path "dist\资金统计软件.exe") {
+            $size = (Get-Item "dist\资金统计软件.exe").Length / 1MB
+            Write-Host "✓ 打包成功！文件大小: $([math]::Round($size, 1)) MB"
+          } else {
+            Write-Host "✗ 打包失败：dist\资金统计软件.exe 不存在"
+            exit 1
+          }
+
+      # ── 6. 重命名产物（含版本号） ─────────────────────────────
+      - name: 重命名 EXE（附版本号）
+        shell: pwsh
+        run: |
+          $version = "${{ steps.get_version.outputs.version }}"
+          $src = "dist\资金统计软件.exe"
+          $dst = "dist\资金统计软件_$version.exe"
+          Move-Item $src $dst
+          Write-Host "✓ 已重命名为: 资金统计软件_$version.exe"
+
+      # ── 7. 上传构建产物（可在 Actions 页面直接下载） ──────────
+      - name: 上传构建产物（Artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: 资金统计软件-${{ steps.get_version.outputs.version }}-windows
+          path: dist/资金统计软件_${{ steps.get_version.outputs.version }}.exe
+          retention-days: 30
+
+      # ── 8. 发布到 GitHub Release ──────────────────────────────
+      - name: 发布到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: "资金统计软件 ${{ steps.get_version.outputs.version }}"
+          tag_name: ${{ steps.get_version.outputs.version }}
+          body: |
+            ## 资金统计软件 ${{ steps.get_version.outputs.version }}
+
+            **玉玄道·资金管理部**
+
+            ### 下载
+            - `资金统计软件_${{ steps.get_version.outputs.version }}.exe` — Windows 可执行程序
+
+            ### 使用前准备
+            1. 下载 EXE 文件，放入项目目录（或任意位置）
+            2. 在同目录下创建以下文件夹：
+               - `input/`   — 存放银行流水 Excel
+               - `output/`  — 报表输出目录（程序自动创建）
+               - `rules/`   — 存放 `规则库.xlsx`
+               - `assets/`  — 存放 `logo.png`（可选）
+            3. 双击 EXE 即可启动
+
+            ### 注意
+            - 首次运行请在界面中配置路径（路径会自动保存）
+            - 如遇"Windows 已保护你的电脑"提示，点击"更多信息"→"仍要运行"
+
+          files: |
+            dist/资金统计软件_${{ steps.get_version.outputs.version }}.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

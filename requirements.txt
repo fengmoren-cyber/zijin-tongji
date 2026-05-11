@@ -1,0 +1,13 @@
+# 资金统计软件 v2 · 依赖清单
+# 安装命令：pip install -r requirements.txt
+
+# ── 核心计算 ──────────────────────────────────────
+openpyxl>=3.1.0          # Excel 读写（.xlsx）
+xlrd>=2.0.1              # Excel 读取（.xls 旧格式）
+
+# ── GUI ───────────────────────────────────────────
+customtkinter>=5.2.0     # 现代 tkinter GUI 框架
+pillow>=10.0.0           # Logo 图片加载
+
+# ── 打包（CI/CD 环境使用）────────────────────────
+# pyinstaller>=6.0.0     # 打包 EXE（不需要加入运行时依赖）
