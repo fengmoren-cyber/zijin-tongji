@@ -15,10 +15,18 @@
 # =============================================================================
 
 import sys
+import importlib
 from pathlib import Path
 
 block_cipher = None
 ROOT = Path(SPECPATH)   # project root（.spec 文件所在目录）
+
+# ── 动态获取 customtkinter 安装路径 ──────────────────────────────
+# 不能写死本地路径，需从已安装的 site-packages 中查找
+_ctk_spec = importlib.util.find_spec('customtkinter')
+if _ctk_spec is None:
+    raise RuntimeError("customtkinter 未安装，请先执行：pip install customtkinter")
+CTK_PATH = str(Path(_ctk_spec.origin).parent)
 
 a = Analysis(
     # 入口脚本
@@ -36,8 +44,8 @@ a = Analysis(
         (str(ROOT / 'src' / '_核心库.py'),    '.'),
         (str(ROOT / 'src' / '生成报表.py'),   '.'),
         (str(ROOT / 'src' / '修正补录.py'),   '.'),
-        # customtkinter 主题文件（必须打包）
-        ('customtkinter', 'customtkinter'),
+        # customtkinter 主题文件（从已安装路径动态获取）
+        (CTK_PATH, 'customtkinter'),
     ],
 
     hiddenimports=[
