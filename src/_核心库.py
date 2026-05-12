@@ -369,7 +369,7 @@ import sys
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Optional, Sequence
 
 import openpyxl
 try:
@@ -614,7 +614,7 @@ class BankRecord:
     source_file: str
     source_row: int
     unique_id: str = ""
-    balance: Decimal = Decimal("0")   # 账户余额（来自流水文件，Decimal("0") 表示未读取）
+    balance: Optional[Decimal] = None  # 账户余额（来自流水文件，None 表示该文件无余额列）
 
 
 @dataclass(frozen=True)
@@ -670,6 +670,33 @@ def to_decimal(value: object) -> Decimal:
         return Decimal(text)
     except InvalidOperation:
         return Decimal("0")
+
+
+def to_decimal_or_none(value: object) -> Optional[Decimal]:
+    """余额专用：空值 / 解析失败返回 None（表示该列无数据），有效数字返回 Decimal。"""
+    text = clean_text(value).replace(",", "")
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        return None
+
+
+def _balance_col(cols: dict[str, int]) -> int:
+    """从列映射中按优先级查找余额列索引，支持各银行不同列名。"""
+    for name in ("余额", "账户余额", "交易后余额", "期末余额", "结余"):
+        if cols.get(name, -1) >= 0:
+            return cols[name]
+    return -1
+
+
+def _read_balance(row: list, cols: dict[str, int]) -> Optional[Decimal]:
+    """读取余额单元格（支持多列名别名），空值或解析失败返回 None。"""
+    idx = _balance_col(cols)
+    if idx < 0 or idx >= len(row):
+        return None
+    return to_decimal_or_none(row[idx])
 
 
 def quantize_wan(value: Decimal) -> Decimal:
@@ -921,12 +948,24 @@ def parse_xlsx(path: Path) -> list[BankRecord]:
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
     rows = list(row_values_xlsx(ws))
+    wb.close()
+    # 招商银行（账号/账号名称/借方金额/贷方金额/余额）
     header = find_header(rows, ["交易日", "借方金额", "贷方金额"])
     if header:
         return parse_cmb_rows(path, rows, header)
+    # 简单格式（海南鸿明等，入账日期/转入金额/转出金额/余额）
     header = find_header(rows, ["入账日期", "转入金额", "转出金额"])
     if header:
         return parse_simple_xlsx_rows(path, rows, header)
+    # 平安银行（玉娇美，交易时间/收入/支出/账户余额/交易日期）
+    header = find_header(rows, ["交易时间", "收入", "支出", "账户余额"])
+    if header:
+        return parse_pingan_xlsx_rows(path, rows, header)
+    # 中国银行 xlsx 双语格式（致远，含"交易日期["/"交易金额["/"交易后余额["列）
+    for row_no, row in rows[:12]:
+        flat = " ".join(clean_text(v) for v in row if v)
+        if "交易日期" in flat and "交易金额" in flat and "交易后余额" in flat:
+            return parse_boc_xlsx_rows(path, rows, row_no)
     return []
 
 
@@ -954,7 +993,7 @@ def parse_cmb_rows(path: Path, rows: Sequence[tuple[int, list[object]]], header:
         counterparty = clean_text(row[cols.get("收(付)方名称", -1)]) if cols.get("收(付)方名称", -1) < len(row) else ""
         summary = first_nonempty(row, cols, ["摘要", "用途", "业务名称", "业务摘要", "其它摘要"])
         unique_id = first_nonempty(row, cols, ["流水号", "业务参考号", "内部编号"])
-        balance = to_decimal(row[cols.get("余额", -1)] if cols.get("余额", -1) >= 0 and cols.get("余额", -1) < len(row) else None)
+        balance = _read_balance(row, cols)
         records.append(BankRecord(company, trade_date, debit, credit, counterparty, summary, bank_name, path.name, row_no, unique_id, balance))
     return records
 
@@ -974,7 +1013,95 @@ def parse_simple_xlsx_rows(path: Path, rows: Sequence[tuple[int, list[object]]],
             continue
         counterparty = clean_text(row[cols.get("对方单位", -1)]) if cols.get("对方单位", -1) < len(row) else ""
         summary = first_nonempty(row, cols, ["摘要"])
-        records.append(BankRecord(company, trade_date, debit, credit, counterparty, summary, bank_name, path.name, row_no))
+        balance = _read_balance(row, cols)
+        records.append(BankRecord(company, trade_date, debit, credit, counterparty, summary, bank_name, path.name, row_no, balance=balance))
+    return records
+
+
+def parse_pingan_xlsx_rows(path: Path, rows: Sequence[tuple[int, list[object]]], header: tuple[int, dict[str, int]]) -> list[BankRecord]:
+    """
+    平安银行 xlsx 格式（玉娇美健康/化妆品）。
+    列：交易时间 | 账号 | 币种 | 收入 | 支出 | 冲正标志 | 账户余额 | 对方账号 | 对方户名 | 摘要 | 交易用途 | … | 交易日期
+    日期取 '交易日期' 列（yyyyMMdd 格式），余额取 '账户余额' 列。
+    """
+    header_row, cols = header
+    company = infer_company("", path.name)
+    bank_name = infer_bank(path.name)
+    records: list[BankRecord] = []
+    for row_no, row in rows:
+        if row_no <= header_row:
+            continue
+        # 优先用 '交易日期' 列（yyyyMMdd），否则用 '交易时间'（截取前8位）
+        if cols.get("交易日期", -1) >= 0 and cols.get("交易日期", -1) < len(row):
+            trade_date = parse_date(row[cols["交易日期"]])
+        else:
+            raw_t = clean_text(row[cols["交易时间"]]) if cols["交易时间"] < len(row) else ""
+            trade_date = parse_date(raw_t[:8]) if len(raw_t) >= 8 else None
+        debit  = to_decimal(row[cols["支出"]] if cols["支出"] < len(row) else None)
+        credit = to_decimal(row[cols["收入"]] if cols["收入"] < len(row) else None)
+        if not trade_date or (debit == 0 and credit == 0):
+            continue
+        counterparty = clean_text(row[cols.get("对方户名", -1)]) if cols.get("对方户名", -1) >= 0 and cols.get("对方户名", -1) < len(row) else ""
+        summary = " ".join(filter(None, [
+            first_nonempty(row, cols, ["摘要"]),
+            first_nonempty(row, cols, ["交易用途"]),
+        ]))
+        unique_id = first_nonempty(row, cols, ["核心唯一流水号", "交易流水号", "业务流水号"])
+        balance = _read_balance(row, cols)
+        records.append(BankRecord(company, trade_date, debit, credit, counterparty, summary,
+                                  bank_name, path.name, row_no, unique_id, balance))
+    return records
+
+
+def parse_boc_xlsx_rows(path: Path, rows: Sequence[tuple[int, list[object]]], header_row_no: int) -> list[BankRecord]:
+    """
+    中国银行 xlsx 双语格式（致远）。
+    列：交易类型 | 业务类型 | … | 交易日期[ Transaction Date ] | 交易时间 | 交易货币 |
+        交易金额[ Trade Amount ] | 交易后余额[ After-transaction balance ] | …
+    交易金额正数=贷（收入），负数=借（支出）。
+    """
+    # 解析表头行，clean_text 后只取中文部分（截到 '[' 之前）
+    def _short(v: str) -> str:
+        return v.split("[")[0].strip()
+
+    company  = infer_company("", path.name)
+    bank_name = infer_bank(path.name)
+    records: list[BankRecord] = []
+
+    # 找表头行（1-indexed）→ 构造 cols 映射（用缩短名）
+    hdr_vals: list[str] = []
+    for rno, row in rows:
+        if rno == header_row_no:
+            hdr_vals = [_short(clean_text(v)) for v in row]
+            break
+    if not hdr_vals:
+        return records
+
+    cols: dict[str, int] = {v: i for i, v in enumerate(hdr_vals) if v}
+
+    for row_no, row in rows:
+        if row_no <= header_row_no:
+            continue
+        if len(row) < 15:
+            continue
+        raw_date = clean_text(row[cols.get("交易日期", -1)]).replace("\t", "").strip() if cols.get("交易日期", -1) >= 0 else ""
+        trade_date = parse_date(raw_date[:8]) if raw_date else None
+        if not trade_date:
+            continue
+        # 交易金额是带符号的单值
+        signed = to_decimal(clean_text(row[cols.get("交易金额", -1)]).replace("\t", "") if cols.get("交易金额", -1) >= 0 else "")
+        if signed == 0:
+            continue
+        debit  = abs(signed) if signed < 0 else Decimal("0")
+        credit = signed       if signed > 0 else Decimal("0")
+        counterparty_col = cols.get("收款人名称", cols.get("付款人名称", -1))
+        counterparty = clean_text(row[counterparty_col]).replace("\t", "") if counterparty_col >= 0 and counterparty_col < len(row) else ""
+        summary_raw = first_nonempty(row, cols, ["摘要", "用途", "交易附言"])
+        summary = summary_raw.replace("\t", "")
+        unique_id = clean_text(row[cols.get("交易流水号", -1)]).replace("\t", "") if cols.get("交易流水号", -1) >= 0 else ""
+        balance = _read_balance(row, cols)
+        records.append(BankRecord(company, trade_date, debit, credit, counterparty, summary,
+                                  bank_name, path.name, row_no, unique_id, balance))
     return records
 
 
@@ -1025,7 +1152,7 @@ def parse_ceb_rows(path: Path, rows: Sequence[tuple[int, list[object]]], header:
         counterparty = clean_text(row[cols.get("对方名称", -1)]) if cols.get("对方名称", -1) < len(row) else ""
         summary = first_nonempty(row, cols, [" 摘要", "摘要"])
         unique_id = first_nonempty(row, cols, ["流水号", "凭证号"])
-        balance = to_decimal(row[cols.get("余额", -1)] if cols.get("余额", -1) >= 0 and cols.get("余额", -1) < len(row) else None)
+        balance = _read_balance(row, cols)
         records.append(BankRecord(company, trade_date, debit, credit, counterparty, summary, bank_name, path.name, row_no, unique_id, balance))
     return records
 
@@ -1052,7 +1179,7 @@ def parse_abc_rows(path: Path, rows: Sequence[tuple[int, list[object]]], header:
             continue
         counterparty = clean_text(row[cols.get("对方户名", -1)]) if cols.get("对方户名", -1) < len(row) else ""
         summary = " ".join(filter(None, [first_nonempty(row, cols, ["交易用途"]), first_nonempty(row, cols, ["摘要"])]))
-        balance = to_decimal(row[cols.get("余额", -1)] if cols.get("余额", -1) >= 0 and cols.get("余额", -1) < len(row) else None)
+        balance = _read_balance(row, cols)
         records.append(BankRecord(company, trade_date, debit, credit, counterparty, summary, bank_name, path.name, row_no, "", balance))
     return records
 
@@ -1073,12 +1200,18 @@ def parse_pingan_rows(path: Path, rows: Sequence[tuple[int, list[object]]], head
         counterparty = clean_text(row[cols.get("对方账户名称", -1)]) if cols.get("对方账户名称", -1) < len(row) else ""
         summary = " ".join(filter(None, [first_nonempty(row, cols, ["摘要"]), first_nonempty(row, cols, ["用途"])]))
         unique_id = first_nonempty(row, cols, ["交易流水号"])
-        balance = to_decimal(row[cols.get("余额", -1)] if cols.get("余额", -1) >= 0 and cols.get("余额", -1) < len(row) else None)
+        balance = _read_balance(row, cols)
         records.append(BankRecord(company, trade_date, debit, credit, counterparty, summary, bank_name, path.name, row_no, unique_id, balance))
     return records
 
 
 def parse_boc_rows(path: Path, rows: Sequence[tuple[int, list[object]]]) -> list[BankRecord]:
+    """
+    中国银行 xls 固定列格式（创投等）。
+    列索引（0-based）：
+      10=交易日期  13=交易金额（带符号）  14=交易后余额
+       5=付款人名称  9=收款人名称  17=交易流水号  23=摘要  24=用途
+    """
     company = infer_company("", path.name)
     bank_name = infer_bank(path.name)
     records: list[BankRecord] = []
@@ -1092,9 +1225,11 @@ def parse_boc_rows(path: Path, rows: Sequence[tuple[int, list[object]]]) -> list
         debit = abs(signed_amount) if signed_amount < 0 else Decimal("0")
         credit = signed_amount if signed_amount > 0 else Decimal("0")
         counterparty = clean_text(row[9] if debit == 0 else row[5])
-        summary = " ".join(filter(None, [clean_text(row[24]), clean_text(row[25])]))
+        summary = " ".join(filter(None, [clean_text(row[23]), clean_text(row[24])]))
         unique_id = clean_text(row[17])
-        records.append(BankRecord(company, trade_date, debit, credit, counterparty, summary, bank_name, path.name, row_no, unique_id))
+        # 交易后余额固定在第 15 列（索引 14）
+        balance = to_decimal_or_none(row[14]) if len(row) > 14 else None
+        records.append(BankRecord(company, trade_date, debit, credit, counterparty, summary, bank_name, path.name, row_no, unique_id, balance))
     return records
 
 
@@ -2426,10 +2561,14 @@ def build_balance_sheet_monthly(wb: Workbook, records: list[BankRecord], year: i
         mo_recs = [r for r in recs if r.trade_date.month == month]
         if not mo_recs:
             return (None, None)
-        open_bal  = mo_recs[0].balance   # 首笔后余额
-        close_bal = mo_recs[-1].balance  # 末笔后余额
-        return (open_bal if (open_bal is not None and open_bal > 0) else None,
-                close_bal if (close_bal is not None and close_bal > 0) else None)
+        # 若该账户所有记录余额均为 None，说明银行文件本身无余额列
+        if all(r.balance is None for r in mo_recs):
+            return (None, None)
+        # 取首笔/末笔有余额数据的记录（跳过 None，保留真实的 0 余额）
+        with_bal = [r for r in mo_recs if r.balance is not None]
+        open_bal  = with_bal[0].balance   # 首笔后余额
+        close_bal = with_bal[-1].balance  # 末笔后余额
+        return (open_bal, close_bal)
 
     # ── 公司排序（按预定顺序，未知公司排末尾）───────────────────────────────
     _CO_ORDER = [
@@ -2513,11 +2652,13 @@ def build_balance_sheet_monthly(wb: Workbook, records: list[BankRecord], year: i
     # ── 数据行 ────────────────────────────────────────────────────────────
     cur_row  = 3
     prev_co  = None
-    co_rows: list[int] = []          # 行号，供合计行 SUM 公式引用
+    co_rows: list[int] = []          # 行号，供合计行引用
     all_data_rows: list[int] = []
+    # 每个数据行的余额列数值（None = 无数据，float = 实际余额）
+    row_col_vals: dict[int, list] = {}
 
     def _flush_company_total(company: str, rows: list[int], r: int) -> None:
-        """写公司小计行。"""
+        """写公司小计行（Python 直接求和，避免 WPS 不刷新公式问题）。"""
         ws.merge_cells(f"A{r}:C{r}")
         ws.cell(r, 1, f"{company} 合计")
         for c in range(1, total_cols + 1):
@@ -2525,11 +2666,20 @@ def build_balance_sheet_monthly(wb: Workbook, records: list[BankRecord], year: i
             cell.font = FNT_TOTAL; cell.fill = FILL_TOTAL
             cell.border = _BORDER_THIN; cell.alignment = AC
         for col_i in range(FIXED_COLS + 1, total_cols + 1):
-            col_l = get_column_letter(col_i)
-            refs = "+".join(f"IFERROR({col_l}{dr}*1,0)" for dr in rows)
-            ws.cell(r, col_i).value = f"={refs}"
-            ws.cell(r, col_i).number_format = NUM
-            ws.cell(r, col_i).alignment = AR
+            col_idx = col_i - FIXED_COLS - 1   # 0-based index into vals list
+            numeric_vals = [
+                row_col_vals[dr][col_idx]
+                for dr in rows
+                if dr in row_col_vals and row_col_vals[dr][col_idx] is not None
+            ]
+            total = sum(numeric_vals) if numeric_vals else None
+            cell = ws.cell(r, col_i)
+            if total is not None:
+                cell.value = total
+                cell.number_format = NUM
+            else:
+                cell.value = "—"
+            cell.alignment = AR
         ws.row_dimensions[r].height = 20
 
     for (company, bank) in sorted_keys:
@@ -2562,23 +2712,28 @@ def build_balance_sheet_monthly(wb: Workbook, records: list[BankRecord], year: i
         for m in months_in_data:
             month_cache[m] = _month_balance(recs, m)
 
+        row_vals: list = []   # 本行各数据列的 float 或 None，用于合计行求和
         for col_offset, (m, kind) in enumerate(data_col_months, FIXED_COLS + 1):
             open_b, close_b = month_cache[m]
             val = open_b if kind == "open" else close_b
             cell = ws.cell(row, col_offset)
             if val is not None:
-                cell.value = float(val)
+                fval = float(val)
+                cell.value = fval
                 cell.fill  = FILL_HAS
                 cell.font  = FNT_BODY
                 cell.number_format = NUM
                 cell.alignment = AR
+                row_vals.append(fval)
             else:
                 cell.value = "无余额数据"
                 cell.fill  = FILL_MISS
                 cell.font  = FNT_MISS
                 cell.alignment = AC
+                row_vals.append(None)
             cell.border = _BORDER_THIN
 
+        row_col_vals[row] = row_vals
         ws.row_dimensions[row].height = 20
         prev_co = company
         cur_row += 1
@@ -2597,11 +2752,19 @@ def build_balance_sheet_monthly(wb: Workbook, records: list[BankRecord], year: i
         cell.font = FNT_GRAND; cell.fill = FILL_GRAND
         cell.border = _BORDER_THIN; cell.alignment = AC
     for col_i in range(FIXED_COLS + 1, total_cols + 1):
-        col_l = get_column_letter(col_i)
-        refs = "+".join(f"IFERROR({col_l}{dr}*1,0)" for dr in all_data_rows)
-        ws.cell(total_row, col_i).value = f"={refs}"
-        ws.cell(total_row, col_i).number_format = NUM
-        ws.cell(total_row, col_i).alignment = AR
+        col_idx = col_i - FIXED_COLS - 1
+        numeric_vals = [
+            row_col_vals[dr][col_idx]
+            for dr in all_data_rows
+            if dr in row_col_vals and row_col_vals[dr][col_idx] is not None
+        ]
+        cell = ws.cell(total_row, col_i)
+        if numeric_vals:
+            cell.value = sum(numeric_vals)
+            cell.number_format = NUM
+        else:
+            cell.value = "—"
+        cell.alignment = AR
     ws.row_dimensions[total_row].height = 26
 
     # 说明行
@@ -2656,12 +2819,12 @@ def build_balance_sheet(wb: Workbook, records: list[BankRecord]) -> None:
             bank,
             rec.source_file,
             rec.trade_date.isoformat(),
-            decimal_to_float(bal) if bal > 0 else "-",
+            decimal_to_float(bal) if bal is not None else "-",
         ])
-        if bal > 0:
+        if bal is not None:
             total_balance += bal
 
-    ws.append(["合计", "", "", "", decimal_to_float(total_balance) if total_balance > 0 else "-"])
+    ws.append(["合计", "", "", "", decimal_to_float(total_balance) if total_balance > Decimal("0") else "-"])
 
     ws.column_dimensions["A"].width = 18
     ws.column_dimensions["B"].width = 24
